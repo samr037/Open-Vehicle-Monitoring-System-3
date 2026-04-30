@@ -545,9 +545,11 @@ OvmsNetManager::OvmsNetManager()
 
   MyConfig.RegisterParam("network", "Network Configuration", true, true);
   // Our instances:
-  //   dns                Space-separated list of DNS servers
-  //   wifi.sq.good       Threshold for usable wifi signal [dBm], default -87
-  //   wifi.sq.bad        Threshold for unusable wifi signal [dBm], default -89
+  //   dns                     Space-separated list of DNS servers
+  //   wifi.sq.good            Threshold for usable wifi signal [dBm], default -87
+  //   wifi.sq.bad             Threshold for unusable wifi signal [dBm], default -89
+  //   ppp.lcp_echo_interval   PPP LCP echo period [s], 0 disables (default 30)
+  //   ppp.lcp_echo_fails      Consecutive LCP echo failures before link declared dead (default 4)
 
 #ifdef CONFIG_OVMS_COMP_WIFI
   MyMetrics.RegisterListener(TAG, MS_N_WIFI_SQ, std::bind(&OvmsNetManager::WifiStaCheckSQ, this, _1));
