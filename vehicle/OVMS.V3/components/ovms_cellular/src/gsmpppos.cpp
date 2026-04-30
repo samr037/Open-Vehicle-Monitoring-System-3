@@ -39,6 +39,7 @@ static const char *TAG = "gsm-ppp";
 #include "ovms_command.h"
 #include "ovms_config.h"
 #include "ovms_events.h"
+#include "ovms_netmanager.h"
 #if ESP_IDF_VERSION_MAJOR >= 5
 #include <netif/ppp/pppapi.h>
 #endif
@@ -220,7 +221,15 @@ void GsmPPPOS::Initialise(GsmMux* mux, int channel)
     ESP_LOGE(TAG, "Error init pppos");
     return;
     }
-  pppapi_set_default(m_ppp);
+  // Only claim the default route when WiFi isn't already the active default.
+  // NetManager's PrioritiseAndIndicate() will reassert WiFi anyway, but
+  // skipping the unconditional set_default here avoids a transient route
+  // flap on PPP cycling. If WiFi isn't up, we still want PPP as default so
+  // the first packets after handoff (V2 reconnect, NTP) go out over LTE.
+  if (!MyNetManager.m_connected_wifi)
+    {
+    pppapi_set_default(m_ppp);
+    }
   }
 
 void GsmPPPOS::DeInitialise()
@@ -237,6 +246,30 @@ void GsmPPPOS::Startup()
     MyConfig.GetParamValue("modem", "apn.user").c_str(),
     MyConfig.GetParamValue("modem", "apn.password").c_str());
   ppp_set_usepeerdns(m_ppp, 1); // Ask the peer for up to 2 DNS server addresses
+
+  // LCP echo keepalive (RFC 1661 Section 5.8): periodically probe the PPP
+  // peer so we detect carrier-side PDP/NAT timeouts proactively instead of
+  // discovering them only when an app pushes traffic (typically minutes
+  // after WiFi -> LTE handoff). Free Mobile FR (CG-NAT) silently expires
+  // idle PDP sessions after 5-10 min, which produced the documented
+  // 5.5 min outage on 2026-04-30 when WiFi dropped on garage exit.
+  //
+  //   network.ppp.lcp_echo_interval  seconds between echoes (0 = off, default 30)
+  //   network.ppp.lcp_echo_fails     consecutive failures before link declared dead (default 4)
+  //
+  // Defaults => dead-link declared in 4 * 30 = 120 s, well under typical
+  // carrier idle timeouts. Set interval = 0 to disable (reverts to upstream).
+  int lcp_int  = MyConfig.GetParamValueInt("network", "ppp.lcp_echo_interval", 30);
+  int lcp_fail = MyConfig.GetParamValueInt("network", "ppp.lcp_echo_fails", 4);
+  if (lcp_int  < 0)   lcp_int  = 0;
+  if (lcp_int  > 255) lcp_int  = 255;
+  if (lcp_fail < 1)   lcp_fail = 1;
+  if (lcp_fail > 255) lcp_fail = 255;
+  m_ppp->settings.lcp_echo_interval = (u8_t)lcp_int;
+  m_ppp->settings.lcp_echo_fails    = (u8_t)lcp_fail;
+  ESP_LOGI(TAG, "PPP LCP echo: interval=%us fails=%u (0 disables)",
+           m_ppp->settings.lcp_echo_interval, m_ppp->settings.lcp_echo_fails);
+
   pppapi_connect(m_ppp, 0);
   }
 
