@@ -215,12 +215,28 @@ static void OvmsServerV2MongooseCallback(struct mg_connection *nc, int ev, void 
         // alread NULL, so this can only be an unexpected connection drop; check cause:
         if (MyOvmsServerV2->m_state == OvmsServerV2::Authenticating)
           {
-          // Auth issue, user needs to fix config, suspend reconnect to avoid IP blocking:
-          MyOvmsServerV2->SetStatus("Authentication error (wrong ID/password)", true, OvmsServerV2::Disconnected);
-          MyOvmsServerV2->Reconnect(-1);
+          // Auth issue: back off exponentially instead of suspending indefinitely.
+          // A permanent suspension turns a single transient failure into an outage that
+          // only a manual "server v2 stop/start" can clear, which is impossible while the
+          // vehicle is away from any reachable network. The backoff still protects shared
+          // carrier IPs: genuinely wrong credentials settle to one attempt per
+          // authfail.retry.max (default 1h) rather than retrying every two minutes.
+          int retrymin = MyConfig.GetParamValueInt("server.v2", "authfail.retry.min", 60);
+          int retrymax = MyConfig.GetParamValueInt("server.v2", "authfail.retry.max", 3600);
+          if (retrymin < 10) retrymin = 10;
+          if (retrymax < retrymin) retrymax = retrymin;
+          int delay = retrymin;
+          for (int i = 0; i < MyOvmsServerV2->m_authfail && delay < retrymax; i++)
+            delay *= 2;
+          if (delay > retrymax) delay = retrymax;
+          if (MyOvmsServerV2->m_authfail < 30) MyOvmsServerV2->m_authfail++;
+          ESP_LOGW(TAG, "Authentication failed (#%d), retrying in %d seconds",
+            MyOvmsServerV2->m_authfail, delay);
+          MyOvmsServerV2->SetStatus("Authentication error (wrong ID/password)", true, OvmsServerV2::WaitReconnect);
+          MyOvmsServerV2->Reconnect(delay);
           MyNotify.NotifyString("alert", "server.v2.auth.failure",
             "Incorrect server V2 login credentials\n"
-            "V2 server connection suspended, verify configuration");
+            "Verify configuration; reconnect is retried with increasing delay");
           }
         else if (MyOvmsServerV2->m_state != OvmsServerV2::WaitReconnect)
           {
@@ -327,6 +343,7 @@ void OvmsServerV2::ProcessServerMsg()
     m_pending_notify_data_last = 0;
     m_pending_notify_data_retransmit = 0;
     m_connretry = 0;
+    m_authfail = 0;
     m_ping_ticker = 0;
 
     StandardMetrics.ms_s_v2_connected->SetValue(true);
@@ -2324,6 +2341,7 @@ OvmsServerV2::OvmsServerV2(const char* name)
   m_lasttx_stream = 0;
   m_peers = 0;
   m_connretry = 0;
+  m_authfail = 0;
   m_mgconn = NULL;
 
   m_pending_notify_info = false;
