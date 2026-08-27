@@ -2105,42 +2105,52 @@ void OvmsServerV2::EventListener(std::string event, void* data)
  */
 void OvmsServerV2::ConfigChanged(OvmsConfigParam* param)
   {
-  auto cfglock = MyConfig.Lock();
-
-  // Read new configuration:
-  m_streaming = MyConfig.GetParamValueInt("vehicle", "stream", 0);
-  m_updatetime_connected = MyConfig.GetParamValueInt("server.v2", "updatetime.connected", 60);
-  m_updatetime_idle = MyConfig.GetParamValueInt("server.v2", "updatetime.idle", 600);
-
-  if (!param) return;
-
-  // Check for changes that need a reconnect:
   bool do_reconnect = false;
-  if (param->GetName() == "server.v2")
+
     {
-    if (param->GetValue("server") != m_server ||
-        param->GetValue("port") != m_port ||
-        param->GetValueBool("tls") != m_tls ||
-        param->GetValueBool("paranoid") != m_paranoid)
+    // Scope the config lock to the reads only. Reconnect() below acquires the Mongoose
+    // lock, while the transmit paths acquire the Mongoose lock first and read
+    // configuration underneath it. Holding the config lock across Reconnect() therefore
+    // inverts the lock order and can wedge the caller: observed twice as a ~63 s stall of
+    // the OVMS Events task ending in a task-watchdog reset (2026-08-23 and 2026-08-27),
+    // both times immediately after a "config set" that requested a reconnect.
+    auto cfglock = MyConfig.Lock();
+
+    // Read new configuration:
+    m_streaming = MyConfig.GetParamValueInt("vehicle", "stream", 0);
+    m_updatetime_connected = MyConfig.GetParamValueInt("server.v2", "updatetime.connected", 60);
+    m_updatetime_idle = MyConfig.GetParamValueInt("server.v2", "updatetime.idle", 600);
+
+    if (!param) return;
+
+    // Check for changes that need a reconnect:
+    if (param->GetName() == "server.v2")
       {
-      do_reconnect = true;
+      if (param->GetValue("server") != m_server ||
+          param->GetValue("port") != m_port ||
+          param->GetValueBool("tls") != m_tls ||
+          param->GetValueBool("paranoid") != m_paranoid)
+        {
+        do_reconnect = true;
+        }
       }
-    }
-  else if (param->GetName() == "vehicle")
-    {
-    if (param->GetValue("id") != m_vehicleid)
+    else if (param->GetName() == "vehicle")
       {
-      do_reconnect = true;
+      if (param->GetValue("id") != m_vehicleid)
+        {
+        do_reconnect = true;
+        }
       }
-    }
-  else if (param->GetName() == "password")
-    {
-    if (param->GetValue("server.v2") != m_password)
+    else if (param->GetName() == "password")
       {
-      do_reconnect = true;
+      if (param->GetValue("server.v2") != m_password)
+        {
+        do_reconnect = true;
+        }
       }
     }
 
+  // Config lock released before taking the Mongoose lock:
   if (do_reconnect && (m_mgconn || m_connretry < 0))
     {
     Reconnect(2);
