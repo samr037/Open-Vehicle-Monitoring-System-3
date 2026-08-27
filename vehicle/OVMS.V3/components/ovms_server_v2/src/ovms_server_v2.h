@@ -115,6 +115,7 @@ class OvmsServerV2 : public OvmsServer, MongooseClient
   public:
     struct mg_connection *m_mgconn;
     int m_connretry;
+    int m_authfail;                 // consecutive auth failures, drives the reconnect backoff
     bool m_loggedin;
 
   protected:
