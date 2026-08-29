@@ -154,12 +154,31 @@ static void OvmsServerV3MongooseCallback(struct mg_connection *nc, int ev, void 
             }
           else
             {
-            // Auth issue, user needs to fix config, suspend reconnect to avoid IP blocking:
-            MyOvmsServerV3->SetStatus("Authentication error (wrong user/password/client ID)", true, OvmsServerV3::Disconnected);
-            MyOvmsServerV3->m_connretry = -1;
+            // Auth issue: back off exponentially instead of suspending indefinitely.
+            // A permanent suspension turns a single transient failure - a broker restart,
+            // a certificate renewal landing at the wrong moment - into an outage that only
+            // a manual "server v3 stop/start" can clear, which is impossible while the
+            // vehicle is away. Server V2 carried the same pattern and cost 55 hours of
+            // silence on 2026-08-25 with credentials that were never wrong; this is the
+            // same fix, applied before it bites here. The backoff still protects shared
+            // carrier IPs: genuinely wrong credentials settle to one attempt per
+            // authfail.retry.max (default 1h) rather than retrying every few seconds.
+            int retrymin = MyConfig.GetParamValueInt("server.v3", "authfail.retry.min", 60);
+            int retrymax = MyConfig.GetParamValueInt("server.v3", "authfail.retry.max", 3600);
+            if (retrymin < 10) retrymin = 10;
+            if (retrymax < retrymin) retrymax = retrymin;
+            int delay = retrymin;
+            for (int i = 0; i < MyOvmsServerV3->m_authfail && delay < retrymax; i++)
+              delay *= 2;
+            if (delay > retrymax) delay = retrymax;
+            if (MyOvmsServerV3->m_authfail < 30) MyOvmsServerV3->m_authfail++;
+            ESP_LOGW(TAG, "Authentication failed (#%d), retrying in %d seconds",
+              MyOvmsServerV3->m_authfail, delay);
+            MyOvmsServerV3->SetStatus("Authentication error (wrong user/password/client ID)", true, OvmsServerV3::WaitReconnect);
+            MyOvmsServerV3->m_connretry = delay;
             MyNotify.NotifyStringf("alert", "server.v3.auth.failure",
               "Incorrect server V3 login credentials or client ID (MQTT CONNACK return code 0x%02X)\n"
-              "V3 server connection suspended, verify configuration",
+              "Verify configuration; reconnect is retried with increasing delay",
               msg->connack_ret_code);
             }
           }
@@ -172,6 +191,7 @@ static void OvmsServerV3MongooseCallback(struct mg_connection *nc, int ev, void 
           MyOvmsServerV3->m_last_rx = now;
           MyOvmsServerV3->m_connected_since = now;
           MyOvmsServerV3->m_probe_sent = false;
+          MyOvmsServerV3->m_authfail = 0;
           MyOvmsServerV3->m_sendall = true;
           MyOvmsServerV3->m_notify_info_pending = true;
           MyOvmsServerV3->m_notify_error_pending = true;
@@ -261,6 +281,7 @@ OvmsServerV3::OvmsServerV3(const char* name)
 
   SetStatus("Server has been started", false, WaitNetwork);
   m_connretry = 0;
+  m_authfail = 0;
   m_connection_counter = 0;
   m_mgconn = NULL;
   m_sendall = false;
@@ -1310,14 +1331,23 @@ void OvmsServerV3::ConfigChanged(OvmsConfigParam* param)
   {
   bool do_reconnect = false;
 
-  // as we're also called from the constructor, ensure exclusive config access:
-  auto cfglock = MyConfig.Lock();
-
-  if (param == NULL)
-    param = MyConfig.CachedParam("server.v3");
-
-  if (param->GetName() == "server.v3")
     {
+    // Scope the config lock to the reads and the do_reconnect decision. Disconnect()
+    // below acquires the Mongoose lock, while the transmit paths acquire the Mongoose
+    // lock first and read configuration underneath it. Holding the config lock across
+    // Disconnect() therefore inverts the lock order and can wedge the caller. The same
+    // shape in Server V2 was seen twice as a ~63 s stall of the OVMS Events task ending
+    // in a task-watchdog reset, both times right after a "config set" that requested a
+    // reconnect; V2 was fixed and this is the same fix, before it bites here too.
+    //
+    // as we're also called from the constructor, ensure exclusive config access:
+    auto cfglock = MyConfig.Lock();
+
+    if (param == NULL)
+      param = MyConfig.CachedParam("server.v3");
+
+    if (param->GetName() == "server.v3")
+      {
     m_updatetime_connected = param->GetValueInt("updatetime.connected", m_updatetime_connected);
     m_updatetime_idle = param->GetValueInt("updatetime.idle", m_updatetime_idle);
     m_updatetime_on = param->GetValueInt("updatetime.on", m_updatetime_on);
@@ -1361,15 +1391,17 @@ void OvmsServerV3::ConfigChanged(OvmsConfigParam* param)
       }
     }
 
-  else if (param->GetName() == "password")
-    {
-    // Check for changes that need a reconnect:
-    if (param->GetValue("server.v3") != m_password)
+    else if (param->GetName() == "password")
       {
-      do_reconnect = true;
+      // Check for changes that need a reconnect:
+      if (param->GetValue("server.v3") != m_password)
+        {
+        do_reconnect = true;
+        }
       }
     }
 
+  // Config lock released before taking the Mongoose lock:
   if (do_reconnect && (m_mgconn || m_connretry < 0))
     {
     Disconnect();

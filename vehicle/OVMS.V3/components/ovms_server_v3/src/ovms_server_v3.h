@@ -97,6 +97,7 @@ class OvmsServerV3 : public OvmsServer, MongooseClient
     std::string m_conn_topic[MQTT_CONN_NTOPICS];
     struct mg_connection *m_mgconn;
     int m_connretry;
+    int m_authfail;                 // consecutive auth failures, drives the reconnect backoff
     int m_connection_counter;
     bool m_sendall;
     uint16_t m_msgid;
