@@ -265,6 +265,7 @@ class OvmsVehicleNissanLeaf : public OvmsVehicle
     int    cfg_gesture_radius;                          // Geofence radius [m], 0 = disabled
     int    cfg_gesture_button;                          // Button bit mask in 0x239 d[3]
     string cfg_gesture_event;                           // Event name signalled on match
+    string cfg_gesture_ssid;                            // Home wifi SSID(s), comma separated
     float  cfg_gesture_lat, cfg_gesture_lon;            // Geofence centre
     #define NL_GESTURE_MAX_PRESSES 8
     int64_t m_gesture_press[NL_GESTURE_MAX_PRESSES] = {};   // ring buffer of press times [ms]

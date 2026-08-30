@@ -244,21 +244,6 @@ OvmsVehicleNissanLeaf::OvmsVehicleNissanLeaf()
 
   cfg_soh_newcar = MyConfig.GetParamValueBool("xnl", "soh.newcar", false);
 
-  // Geste volant : N appuis sur CANCEL dans une fenêtre, éventuellement borné
-  // à une geofence. Désactivé par défaut.
-  cfg_gesture_enable   = MyConfig.GetParamValueBool ("xnl", "gesture.enable", false);
-  cfg_gesture_presses  = MyConfig.GetParamValueInt  ("xnl", "gesture.presses", 3);
-  cfg_gesture_window   = MyConfig.GetParamValueInt  ("xnl", "gesture.window", 10) * 1000;
-  cfg_gesture_cooldown = MyConfig.GetParamValueInt  ("xnl", "gesture.cooldown", 10) * 1000;
-  cfg_gesture_radius   = MyConfig.GetParamValueInt  ("xnl", "gesture.radius", 0);
-  // Quel bouton du volant, dans d[3] de 0x239 :
-  //   0x01 ProPILOT · 0x02 CANCEL · 0x04 distance · 0x08 SET · 0x10 RES
-  cfg_gesture_button   = MyConfig.GetParamValueInt  ("xnl", "gesture.button", 0x02);
-  // Nom de l'événement levé — permet plusieurs gestes distincts côté abonné,
-  // le sujet MQTT en découle : xnl.gesture.cancel -> …/event/xnl/gesture/cancel
-  cfg_gesture_event    = MyConfig.GetParamValue     ("xnl", "gesture.event", "xnl.gesture.cancel");
-  if (cfg_gesture_button == 0) cfg_gesture_button = 0x02;
-  if (cfg_gesture_event.empty()) cfg_gesture_event = "xnl.gesture.cancel";
   cfg_gesture_lat      = MyConfig.GetParamValueFloat("xnl", "gesture.lat", 0);
   cfg_gesture_lon      = MyConfig.GetParamValueFloat("xnl", "gesture.lon", 0);
   if (cfg_gesture_presses < 2) cfg_gesture_presses = 2;
@@ -447,6 +432,24 @@ void OvmsVehicleNissanLeaf::ConfigChanged(OvmsConfigParam* param)
   StandardMetrics.ms_v_charge_limit_range->SetValue( (float) MyConfig.GetParamValueInt("xnl", "suffrange"), Kilometers );
 
   cfg_ev_request_port       = MyConfig.GetParamValueInt("xnl", "cfg_ev_request_port");
+  // Geste volant : N appuis sur CANCEL dans une fenêtre, éventuellement borné
+  // à une geofence. Désactivé par défaut.
+  cfg_gesture_enable   = MyConfig.GetParamValueBool ("xnl", "gesture.enable", false);
+  cfg_gesture_presses  = MyConfig.GetParamValueInt  ("xnl", "gesture.presses", 3);
+  cfg_gesture_window   = MyConfig.GetParamValueInt  ("xnl", "gesture.window", 10) * 1000;
+  cfg_gesture_cooldown = MyConfig.GetParamValueInt  ("xnl", "gesture.cooldown", 10) * 1000;
+  cfg_gesture_radius   = MyConfig.GetParamValueInt  ("xnl", "gesture.radius", 0);
+  // Quel bouton du volant, dans d[3] de 0x239 :
+  //   0x01 ProPILOT · 0x02 CANCEL · 0x04 distance · 0x08 SET · 0x10 RES
+  cfg_gesture_button   = MyConfig.GetParamValueInt  ("xnl", "gesture.button", 0x02);
+  // Nom de l'événement levé — permet plusieurs gestes distincts côté abonné,
+  // le sujet MQTT en découle : xnl.gesture.cancel -> …/event/xnl/gesture/cancel
+  cfg_gesture_event    = MyConfig.GetParamValue     ("xnl", "gesture.event", "xnl.gesture.cancel");
+  // SSID(s) de la maison, séparés par des virgules. Être associé à l'un d'eux
+  // prouve la présence ; ne pas l'être ne prouve rien, d'où le OU avec le GPS.
+  cfg_gesture_ssid     = MyConfig.GetParamValue     ("xnl", "gesture.ssid", "");
+  if (cfg_gesture_button == 0) cfg_gesture_button = 0x02;
+  if (cfg_gesture_event.empty()) cfg_gesture_event = "xnl.gesture.cancel";
   cfg_limit_range_calc      = MyConfig.GetParamValue("xnl", "suffrangecalc", DEFAULT_SUFF_RANGE_CALC);
   cfg_allowed_rangedrop     = MyConfig.GetParamValueInt("xnl", "rangedrop", DEFAULT_RANGEDROP);
   cfg_allowed_socdrop       = MyConfig.GetParamValueInt("xnl", "socdrop", DEFAULT_SOCDROP);
@@ -2011,25 +2014,49 @@ void OvmsVehicleNissanLeaf::IncomingFrameCan2(CAN_frame_t* p_frame)
               now - m_gesture_last_fire > cfg_gesture_cooldown)
             {
             bool inzone = true;
-            if (cfg_gesture_radius > 0)
+            if (cfg_gesture_radius > 0 || !cfg_gesture_ssid.empty())
               {
-              // Dernière position connue : les métriques persistent sans lock
-              // GPS, contrairement à v.p.location qui est vide voiture endormie.
-              float la = StandardMetrics.ms_v_pos_latitude->AsFloat();
-              float lo = StandardMetrics.ms_v_pos_longitude->AsFloat();
-              if (la == 0 && lo == 0)
-                inzone = false;                        // pas de position : on n'agit pas
-              else
+              inzone = false;
+
+              // 1) Le WiFi de la maison prouve la présence, immédiatement et
+              //    sans satellite — décisif dans un garage couvert, et au
+              //    démarrage à froid quand le GPS n'a pas encore de point.
+              if (!cfg_gesture_ssid.empty())
                 {
-                const float R = 6371000.0f;
-                float dp = (la - cfg_gesture_lat) * (float)M_PI / 180.0f;
-                float dl = (lo - cfg_gesture_lon) * (float)M_PI / 180.0f;
-                float m  = cosf(cfg_gesture_lat * (float)M_PI / 180.0f);
-                float a  = sinf(dp/2)*sinf(dp/2) + m*m*sinf(dl/2)*sinf(dl/2);
-                float dist = 2 * R * asinf(sqrtf(a));
-                inzone = (dist <= cfg_gesture_radius);
-                ESP_LOGI(TAG, "Gesture: %d presses, %.0f m from home (radius %d m)",
-                         m_gesture_count, dist, cfg_gesture_radius);
+                std::string ssid = StandardMetrics.ms_m_net_wifi_network->AsString();
+                if (!ssid.empty())
+                  {
+                  std::string list = "," + cfg_gesture_ssid + ",";
+                  if (list.find("," + ssid + ",") != std::string::npos)
+                    {
+                    inzone = true;
+                    ESP_LOGI(TAG, "Gesture: on home wifi '%s'", ssid.c_str());
+                    }
+                  }
+                }
+
+              // 2) Sinon, le GPS s'il a un point. Ne pas être sur le WiFi ne
+              //    prouve pas l'absence : la borne ne porte pas jusqu'à la rue.
+              if (!inzone && cfg_gesture_radius > 0)
+                {
+                float la = StandardMetrics.ms_v_pos_latitude->AsFloat();
+                float lo = StandardMetrics.ms_v_pos_longitude->AsFloat();
+                if (la == 0 && lo == 0)
+                  {
+                  ESP_LOGI(TAG, "Gesture: no wifi match and no GPS fix");
+                  }
+                else
+                  {
+                  const float R = 6371000.0f;
+                  float dp = (la - cfg_gesture_lat) * (float)M_PI / 180.0f;
+                  float dl = (lo - cfg_gesture_lon) * (float)M_PI / 180.0f;
+                  float m  = cosf(cfg_gesture_lat * (float)M_PI / 180.0f);
+                  float a  = sinf(dp/2)*sinf(dp/2) + m*m*sinf(dl/2)*sinf(dl/2);
+                  float dist = 2 * R * asinf(sqrtf(a));
+                  inzone = (dist <= cfg_gesture_radius);
+                  ESP_LOGI(TAG, "Gesture: %.0f m from home (radius %d m)",
+                           dist, cfg_gesture_radius);
+                  }
                 }
               }
             m_gesture_last_fire = now;
