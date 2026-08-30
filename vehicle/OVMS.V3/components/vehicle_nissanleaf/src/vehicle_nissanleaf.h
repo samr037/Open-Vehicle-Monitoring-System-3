@@ -256,6 +256,22 @@ class OvmsVehicleNissanLeaf : public OvmsVehicle
     string cfg_limit_range_calc;                        // What range calc to use for charge to range feature
     float  cfg_speed_divisor;                           // Divisor used for dividing raw speed value received from can1 0x284 msg
 
+    // --- Geste volant : N appuis sur CANCEL (0x239) dans une fenêtre ---
+    // Détecté au niveau de la réception CAN, sans dépendre du réseau.
+    bool   cfg_gesture_enable = false;                  // Enable steering wheel gesture trigger
+    int    cfg_gesture_presses;                         // Presses required
+    int    cfg_gesture_window;                          // Window [ms]
+    int    cfg_gesture_cooldown;                        // Cooldown after a trigger [ms]
+    int    cfg_gesture_radius;                          // Geofence radius [m], 0 = disabled
+    int    cfg_gesture_button;                          // Button bit mask in 0x239 d[3]
+    string cfg_gesture_event;                           // Event name signalled on match
+    float  cfg_gesture_lat, cfg_gesture_lon;            // Geofence centre
+    #define NL_GESTURE_MAX_PRESSES 8
+    int64_t m_gesture_press[NL_GESTURE_MAX_PRESSES] = {};   // ring buffer of press times [ms]
+    int     m_gesture_count = 0;                        // valid entries in the ring
+    int64_t m_gesture_last_fire = 0;                    // [ms]
+    bool    m_gesture_down = false;                     // previous button state
+
 
     int         m_MITM = 0;
     double      m_trip_odo;                             // trip distance estimated from speed
