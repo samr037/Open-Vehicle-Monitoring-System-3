@@ -34,6 +34,8 @@ static const char *TAG = "v-nissanleaf";
 
 #include <stdio.h>
 #include <string.h>
+#include <math.h>
+#include "esp_timer.h"
 #include "pcp.h"
 #include "vehicle_nissanleaf.h"
 #include "ovms_events.h"
@@ -219,6 +221,26 @@ OvmsVehicleNissanLeaf::OvmsVehicleNissanLeaf()
   m_climate_really_off = false;
 
   cfg_soh_newcar = MyConfig.GetParamValueBool("xnl", "soh.newcar", false);
+
+  // Geste volant : N appuis sur CANCEL dans une fenêtre, éventuellement borné
+  // à une geofence. Désactivé par défaut.
+  cfg_gesture_enable   = MyConfig.GetParamValueBool ("xnl", "gesture.enable", false);
+  cfg_gesture_presses  = MyConfig.GetParamValueInt  ("xnl", "gesture.presses", 3);
+  cfg_gesture_window   = MyConfig.GetParamValueInt  ("xnl", "gesture.window", 10) * 1000;
+  cfg_gesture_cooldown = MyConfig.GetParamValueInt  ("xnl", "gesture.cooldown", 10) * 1000;
+  cfg_gesture_radius   = MyConfig.GetParamValueInt  ("xnl", "gesture.radius", 0);
+  // Quel bouton du volant, dans d[3] de 0x239 :
+  //   0x01 ProPILOT · 0x02 CANCEL · 0x04 distance · 0x08 SET · 0x10 RES
+  cfg_gesture_button   = MyConfig.GetParamValueInt  ("xnl", "gesture.button", 0x02);
+  // Nom de l'événement levé — permet plusieurs gestes distincts côté abonné,
+  // le sujet MQTT en découle : xnl.gesture.cancel -> …/event/xnl/gesture/cancel
+  cfg_gesture_event    = MyConfig.GetParamValue     ("xnl", "gesture.event", "xnl.gesture.cancel");
+  if (cfg_gesture_button == 0) cfg_gesture_button = 0x02;
+  if (cfg_gesture_event.empty()) cfg_gesture_event = "xnl.gesture.cancel";
+  cfg_gesture_lat      = MyConfig.GetParamValueFloat("xnl", "gesture.lat", 0);
+  cfg_gesture_lon      = MyConfig.GetParamValueFloat("xnl", "gesture.lon", 0);
+  if (cfg_gesture_presses < 2) cfg_gesture_presses = 2;
+  if (cfg_gesture_presses > NL_GESTURE_MAX_PRESSES) cfg_gesture_presses = NL_GESTURE_MAX_PRESSES;
 
   // register but don't auto-power-off the busses.
   RegisterCanBus(1,CAN_MODE_ACTIVE,CAN_SPEED_500KBPS, nullptr, false);
@@ -1764,6 +1786,68 @@ void OvmsVehicleNissanLeaf::IncomingFrameCan2(CAN_frame_t* p_frame)
 
   switch (p_frame->MsgID)
     {
+    case 0x239:
+      // CRUISE_THROTTLE : d[3] porte les boutons du volant, un bit chacun
+      //   0x01 ProPILOT · 0x02 CANCEL · 0x04 distance · 0x08 SET · 0x10 RES
+      //   0x20 aucun bouton (reste levé pendant l'appui : tester le bit, pas
+      //   comparer l'octet). d[2] bit 0x02 = régulateur armé.
+      // Source : opendbc de comma.ai, nissan_leaf_2018.dbc, BO_ 569.
+      if (cfg_gesture_enable)
+        {
+        bool down = (d[3] & cfg_gesture_button) != 0;
+        if (down && !m_gesture_down)                   // front montant seulement
+          {
+          int64_t now = esp_timer_get_time() / 1000;
+          // purge de la fenêtre glissante
+          int keep = 0;
+          for (int i = 0; i < m_gesture_count; i++)
+            if (now - m_gesture_press[i] <= cfg_gesture_window)
+              m_gesture_press[keep++] = m_gesture_press[i];
+          m_gesture_count = keep;
+          if (m_gesture_count < NL_GESTURE_MAX_PRESSES)
+            m_gesture_press[m_gesture_count++] = now;
+
+          if (m_gesture_count >= cfg_gesture_presses &&
+              now - m_gesture_last_fire > cfg_gesture_cooldown)
+            {
+            bool inzone = true;
+            if (cfg_gesture_radius > 0)
+              {
+              // Dernière position connue : les métriques persistent sans lock
+              // GPS, contrairement à v.p.location qui est vide voiture endormie.
+              float la = StandardMetrics.ms_v_pos_latitude->AsFloat();
+              float lo = StandardMetrics.ms_v_pos_longitude->AsFloat();
+              if (la == 0 && lo == 0)
+                inzone = false;                        // pas de position : on n'agit pas
+              else
+                {
+                const float R = 6371000.0f;
+                float dp = (la - cfg_gesture_lat) * (float)M_PI / 180.0f;
+                float dl = (lo - cfg_gesture_lon) * (float)M_PI / 180.0f;
+                float m  = cosf(cfg_gesture_lat * (float)M_PI / 180.0f);
+                float a  = sinf(dp/2)*sinf(dp/2) + m*m*sinf(dl/2)*sinf(dl/2);
+                float dist = 2 * R * asinf(sqrtf(a));
+                inzone = (dist <= cfg_gesture_radius);
+                ESP_LOGI(TAG, "Gesture: %d presses, %.0f m from home (radius %d m)",
+                         m_gesture_count, dist, cfg_gesture_radius);
+                }
+              }
+            m_gesture_last_fire = now;
+            m_gesture_count = 0;
+            if (inzone)
+              {
+              ESP_LOGI(TAG, "Gesture recognised: signalling %s", cfg_gesture_event.c_str());
+              MyEvents.SignalEvent(cfg_gesture_event, NULL);
+              }
+            else
+              {
+              ESP_LOGI(TAG, "Gesture recognised but out of geofence, ignored");
+              }
+            }
+          }
+        m_gesture_down = down;
+        }
+      break;
     case 0x180:
       if (d[5] != 0xff)
         {
