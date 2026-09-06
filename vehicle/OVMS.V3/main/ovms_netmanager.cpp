@@ -58,7 +58,20 @@ static const char *TAG = "netmanager";
 #include "ovms_boot.h"
 
 #ifndef CONFIG_OVMS_NETMAN_TASK_PRIORITY
-#define CONFIG_OVMS_NETMAN_TASK_PRIORITY 5
+// This task runs the Mongoose event loop, and it holds the Mongoose lock while
+// it does. Server V2, Server V3 and the webserver are callbacks inside it, not
+// tasks of their own. At the historical priority of 5 it was the lowest task on
+// its core, below OVMS Events (8) and the vehicle poller (10) — so under load it
+// could hold the lock without being scheduled, while OvmsServerV3::Ticker1()
+// blocked on that same lock once per second from the Events task. Events then
+// stopped draining, the idle task starved, and the task watchdog fired at 60 s.
+// Observed 2026-09-05: "Event: ticker.1@ovms-server-v3 50 secs / WDT tasks: IDLE1".
+//
+// Priority inheritance does not rescue this: MongooseTask() deliberately reverts
+// its own boosted priority on every loop iteration (see the comment there).
+//
+// 12 puts the loop above Events and the poller, and below lwIP's tiT (18).
+#define CONFIG_OVMS_NETMAN_TASK_PRIORITY 12
 #endif
 
 OvmsNetManager MyNetManager __attribute__ ((init_priority (8999)));
