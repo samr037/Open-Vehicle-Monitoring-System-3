@@ -252,6 +252,58 @@ OvmsVehicleNissanLeaf::OvmsVehicleNissanLeaf()
   // register but don't auto-power-off the busses.
   RegisterCanBus(1,CAN_MODE_ACTIVE,CAN_SPEED_500KBPS, nullptr, false);
   RegisterCanBus(2,CAN_MODE_ACTIVE,CAN_SPEED_500KBPS, nullptr, false);
+
+  // Poller acceptance filter.
+  //
+  // OvmsPollers::PollerRxCallback() copies EVERY received frame into a
+  // poll_queue_entry_t and posts it to the poller task unless a filter rejects it
+  // first. With no filter installed, the whole of EV-CAN and CAR-CAN crossed a
+  // 60-entry queue, woke a priority-10 task pinned to core 1, was copied twice more,
+  // and was then discarded by the default case of IncomingFrameCan1()/Can2().
+  //
+  // With the car awake EV-CAN runs at several thousand frames/s. That is enough to
+  // keep the poller task permanently runnable, so IDLE1 never gets scheduled and the
+  // task watchdog (60 s, TASK_WDT_PANIC=y) resets the module. Observed on this car as
+  // a reset 86-103 s after every wake-up, with "WDT tasks: IDLE1" and the reset reason
+  // register reading SW_CPU_RESET (12) on both cores - a panic, not a brownout.
+  //
+  // The filter is evaluated in the CAN RX task (core 0, priority 23) and drops the
+  // frame before it is ever queued, so the cost stays off core 1 entirely. Ranges are
+  // ordered most-frequent-first: canfilter::IsFiltered() is a linear scan and the
+  // common case should exit it early.
+  //
+  // vehicle_renaultzoe_ph2 and vehicle_niu_gtevo already do this; the Leaf did not.
+
+  // EV-CAN (can1) - the 19 IDs read by IncomingFrameCan1()
+  MyPollers.AddFilter(1, 0x1d4, 0x1dc);   // 1d4 1da 1db 1dc - 10 ms frames, bulk of the bus
+  MyPollers.AddFilter(1, 0x54a, 0x54f);   // 54a 54b 54c 54f
+  MyPollers.AddFilter(1, 0x5bc, 0x5c0);   // 5bc 5bf 5c0
+  MyPollers.AddFilter(1, 0x380, 0x390);   // 380 390
+  MyPollers.AddFilter(1, 0x55a, 0x55b);   // 55a 55b
+  MyPollers.AddFilter(1, 0x284, 0x284);
+  MyPollers.AddFilter(1, 0x50a, 0x50a);
+  MyPollers.AddFilter(1, 0x59e, 0x59e);   // ZE1 instrument SOC
+  MyPollers.AddFilter(1, 0x679, 0x679);
+
+  // CAR-CAN (can2) - the 11 IDs read by IncomingFrameCan2()
+  MyPollers.AddFilter(2, 0x239, 0x239);   // CRUISE_THROTTLE - the steering wheel gesture
+  MyPollers.AddFilter(2, 0x5b3, 0x5b9);   // 5b3 5b9
+  MyPollers.AddFilter(2, 0x180, 0x180);
+  MyPollers.AddFilter(2, 0x292, 0x292);
+  MyPollers.AddFilter(2, 0x355, 0x355);
+  MyPollers.AddFilter(2, 0x385, 0x385);
+  MyPollers.AddFilter(2, 0x421, 0x421);
+  MyPollers.AddFilter(2, 0x5a9, 0x5a9);
+  MyPollers.AddFilter(2, 0x5c5, 0x5c5);
+  MyPollers.AddFilter(2, 0x60d, 0x60d);
+
+  // Diagnostic responses, either bus. 0x760-0x7bb spans every documented ZE1 response
+  // ID (ABS 760, VSP 761, EPS 762, cluster 763, HVAC 764, BCM 765, IPDM 76d, TCU 783,
+  // inverter 78c, charger 793, VCM 79a, LBC 7bb), so both obdii_polls_* and an ad-hoc
+  // `xnl obd canN device <txid> <rxid> ...` keep getting their answers. The range is
+  // idle address space otherwise, so it costs nothing at runtime.
+  MyPollers.AddFilter(0, 0x760, 0x7bb);
+
   PollSetState(POLLSTATE_OFF);
   //PollSetResponseSeparationTime(0);
 
@@ -313,6 +365,10 @@ unsigned char leafcrc(int l, unsigned char * b){
 OvmsVehicleNissanLeaf::~OvmsVehicleNissanLeaf()
   {
   ESP_LOGI(TAG, "Shutdown Nissan Leaf vehicle module");
+
+  // Filters live in OvmsPollers, not in this object: drop them so switching to
+  // another vehicle module (or to NONE) does not leave the Leaf's ID set behind.
+  MyPollers.ClearFilters();
 
 #ifdef CONFIG_OVMS_COMP_WEBSERVER
   WebDeInit();
