@@ -271,6 +271,15 @@ class OvmsVehicleNissanLeaf : public OvmsVehicle
     int64_t m_gesture_last_fire = 0;                    // [ms]
     bool    m_gesture_down = false;                     // previous button state
 
+    // Observability: every recognised gesture is recorded here, accepted or not.
+    // Metrics are retained on the module and published as retained MQTT values, so
+    // they can be read back after the fact even when the network was dead at the
+    // instant of the gesture - which is exactly when the event itself gets lost.
+    OvmsMetricString* m_gesture_last;          // xnl.gesture.last        one-line record
+    OvmsMetricString* m_gesture_last_result;   // xnl.gesture.last.result accepted-wifi | accepted-gps | rejected-gps | rejected-nofix
+    OvmsMetricInt*    m_gesture_count_ok;      // xnl.gesture.count.ok    persistent across reboots
+    OvmsMetricInt*    m_gesture_count_ko;      // xnl.gesture.count.ko    persistent across reboots
+
 
     int         m_MITM = 0;
     double      m_trip_odo;                             // trip distance estimated from speed
