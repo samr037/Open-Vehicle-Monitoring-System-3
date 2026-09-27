@@ -36,6 +36,7 @@ static const char *TAG = "v-nissanleaf";
 #include <string.h>
 #include <math.h>
 #include "esp_timer.h"
+#include <time.h>
 #include "pcp.h"
 #include "vehicle_common.h"
 #include "vehicle_nissanleaf.h"
@@ -218,6 +219,10 @@ OvmsVehicleNissanLeaf::OvmsVehicleNissanLeaf()
   m_charge_limit = MyMetrics.InitString("xnl.v.c.limit.reason", SM_STALE_MIN, 0);
   m_charge_count_qc     = MyMetrics.InitInt("xnl.v.c.count.qc",     SM_STALE_NONE, 0);
   m_charge_count_l0l1l2 = MyMetrics.InitInt("xnl.v.c.count.l0l1l2", SM_STALE_NONE, 0);
+  m_gesture_last        = MyMetrics.InitString("xnl.gesture.last",        SM_STALE_NONE, "");
+  m_gesture_last_result = MyMetrics.InitString("xnl.gesture.last.result", SM_STALE_NONE, "");
+  m_gesture_count_ok    = MyMetrics.InitInt("xnl.gesture.count.ok", SM_STALE_NONE, 0, Other, true);
+  m_gesture_count_ko    = MyMetrics.InitInt("xnl.gesture.count.ko", SM_STALE_NONE, 0, Other, true);
   m_climate_vent = MyMetrics.InitString("v.e.cabinvent", SM_STALE_MIN, 0);
   m_climate_intake = MyMetrics.InitString("v.e.cabinintake", SM_STALE_MIN, 0);
   m_climate_setpoint = MyMetrics.InitFloat("v.e.cabinsetpoint", SM_STALE_HIGH, 0, Celcius);
@@ -2070,6 +2075,8 @@ void OvmsVehicleNissanLeaf::IncomingFrameCan2(CAN_frame_t* p_frame)
               now - m_gesture_last_fire > cfg_gesture_cooldown)
             {
             bool inzone = true;
+            const char* reason = "unfenced";   // why the decision went the way it did
+            float dist = -1;                   // metres from home, -1 = not computed
             if (cfg_gesture_radius > 0 || !cfg_gesture_ssid.empty())
               {
               inzone = false;
@@ -2086,6 +2093,7 @@ void OvmsVehicleNissanLeaf::IncomingFrameCan2(CAN_frame_t* p_frame)
                   if (list.find("," + ssid + ",") != std::string::npos)
                     {
                     inzone = true;
+                    reason = "wifi";
                     ESP_LOGI(TAG, "Gesture: on home wifi '%s'", ssid.c_str());
                     }
                   }
@@ -2099,6 +2107,7 @@ void OvmsVehicleNissanLeaf::IncomingFrameCan2(CAN_frame_t* p_frame)
                 float lo = StandardMetrics.ms_v_pos_longitude->AsFloat();
                 if (la == 0 && lo == 0)
                   {
+                  reason = "nofix";
                   ESP_LOGI(TAG, "Gesture: no wifi match and no GPS fix");
                   }
                 else
@@ -2108,8 +2117,9 @@ void OvmsVehicleNissanLeaf::IncomingFrameCan2(CAN_frame_t* p_frame)
                   float dl = (lo - cfg_gesture_lon) * (float)M_PI / 180.0f;
                   float m  = cosf(cfg_gesture_lat * (float)M_PI / 180.0f);
                   float a  = sinf(dp/2)*sinf(dp/2) + m*m*sinf(dl/2)*sinf(dl/2);
-                  float dist = 2 * R * asinf(sqrtf(a));
+                  dist = 2 * R * asinf(sqrtf(a));
                   inzone = (dist <= cfg_gesture_radius);
+                  reason = "gps";
                   ESP_LOGI(TAG, "Gesture: %.0f m from home (radius %d m)",
                            dist, cfg_gesture_radius);
                   }
@@ -2117,6 +2127,31 @@ void OvmsVehicleNissanLeaf::IncomingFrameCan2(CAN_frame_t* p_frame)
               }
             m_gesture_last_fire = now;
             m_gesture_count = 0;
+
+            // Record the decision before acting on it. The event that follows is
+            // fire-and-forget (QoS 0, dropped outright if Server V3 is down), so
+            // this record is the only durable trace that the gesture ever happened.
+            {
+            char when[24] = "no-clock";
+            time_t t = time(NULL);
+            struct tm tmv;
+            if (t > 1600000000 && localtime_r(&t, &tmv))
+              strftime(when, sizeof(when), "%Y-%m-%d %H:%M:%S", &tmv);
+            bool v3up = StandardMetrics.ms_s_v3_connected->AsBool();
+            std::string net = StandardMetrics.ms_m_net_type->AsString();
+            char dstr[16] = "n/a";
+            if (dist >= 0) snprintf(dstr, sizeof(dstr), "%.0fm", dist);
+            char rec[160];
+            snprintf(rec, sizeof(rec), "%s %s %s dist=%s net=%s v3=%s",
+                     when, inzone ? "accepted" : "rejected", reason,
+                     dstr, net.c_str(), v3up ? "yes" : "no");
+            std::string res = std::string(inzone ? "accepted-" : "rejected-") + reason;
+            m_gesture_last->SetValue(rec);
+            m_gesture_last_result->SetValue(res);
+            if (inzone) m_gesture_count_ok->SetValue(m_gesture_count_ok->AsInt() + 1);
+            else        m_gesture_count_ko->SetValue(m_gesture_count_ko->AsInt() + 1);
+            }
+
             if (inzone)
               {
               ESP_LOGI(TAG, "Gesture recognised: signalling %s", cfg_gesture_event.c_str());
