@@ -250,11 +250,6 @@ OvmsVehicleNissanLeaf::OvmsVehicleNissanLeaf()
 
   cfg_soh_newcar = MyConfig.GetParamValueBool("xnl", "soh.newcar", false);
 
-  cfg_gesture_lat      = MyConfig.GetParamValueFloat("xnl", "gesture.lat", 0);
-  cfg_gesture_lon      = MyConfig.GetParamValueFloat("xnl", "gesture.lon", 0);
-  if (cfg_gesture_presses < 2) cfg_gesture_presses = 2;
-  if (cfg_gesture_presses > NL_GESTURE_MAX_PRESSES) cfg_gesture_presses = NL_GESTURE_MAX_PRESSES;
-
   // register but don't auto-power-off the busses.
   RegisterCanBus(1,CAN_MODE_ACTIVE,CAN_SPEED_500KBPS, nullptr, false);
   RegisterCanBus(2,CAN_MODE_ACTIVE,CAN_SPEED_500KBPS, nullptr, false);
@@ -309,6 +304,9 @@ OvmsVehicleNissanLeaf::OvmsVehicleNissanLeaf()
   // `xnl obd canN device <txid> <rxid> ...` keep getting their answers. The range is
   // idle address space otherwise, so it costs nothing at runtime.
   MyPollers.AddFilter(0, 0x760, 0x7bb);
+  // Functional-addressing replies: `xnl obd canN broadcast <req>` sends to 0x7df
+  // and the ISO-TP poller then listens on 0x7e8-0x7ef (rxid 0 = BROADCAST_RXID).
+  MyPollers.AddFilter(0, 0x7e8, 0x7ef);
 
   PollSetState(POLLSTATE_OFF);
   //PollSetResponseSeparationTime(0);
@@ -510,8 +508,17 @@ void OvmsVehicleNissanLeaf::ConfigChanged(OvmsConfigParam* param)
   // SSID(s) de la maison, séparés par des virgules. Être associé à l'un d'eux
   // prouve la présence ; ne pas l'être ne prouve rien, d'où le OU avec le GPS.
   cfg_gesture_ssid     = MyConfig.GetParamValue     ("xnl", "gesture.ssid", "");
+  cfg_gesture_lat      = MyConfig.GetParamValueFloat("xnl", "gesture.lat", 0);
+  cfg_gesture_lon      = MyConfig.GetParamValueFloat("xnl", "gesture.lon", 0);
   if (cfg_gesture_button == 0) cfg_gesture_button = 0x02;
   if (cfg_gesture_event.empty()) cfg_gesture_event = "xnl.gesture.cancel";
+  // Clamp here, where the values are actually loaded (the constructor runs
+  // ConfigChanged() right after, so clamps placed there were overwritten):
+  // < 2 would fire on every press, > ring size could never fire at all.
+  if (cfg_gesture_presses < 2) cfg_gesture_presses = 2;
+  if (cfg_gesture_presses > NL_GESTURE_MAX_PRESSES) cfg_gesture_presses = NL_GESTURE_MAX_PRESSES;
+  if (cfg_gesture_window < 1000) cfg_gesture_window = 1000;
+  if (cfg_gesture_cooldown < 0) cfg_gesture_cooldown = 0;
   cfg_limit_range_calc      = MyConfig.GetParamValue("xnl", "suffrangecalc", DEFAULT_SUFF_RANGE_CALC);
   cfg_allowed_rangedrop     = MyConfig.GetParamValueInt("xnl", "rangedrop", DEFAULT_RANGEDROP);
   cfg_allowed_socdrop       = MyConfig.GetParamValueInt("xnl", "socdrop", DEFAULT_SOCDROP);
@@ -2063,6 +2070,15 @@ void OvmsVehicleNissanLeaf::IncomingFrameCan2(CAN_frame_t* p_frame)
         if (down && !m_gesture_down)                   // front montant seulement
           {
           int64_t now = esp_timer_get_time() / 1000;
+          if (m_gesture_last_fire != 0 && now - m_gesture_last_fire <= cfg_gesture_cooldown)
+            {
+            // Délai de garde : un appui de trop (ou un rebond, jusqu'à 5 fronts
+            // mesurés pour une pression) ne doit pas rester dans la fenêtre et
+            // redéclencher dès la fin de la garde — ce qui inverserait le portail.
+            m_gesture_count = 0;
+            m_gesture_down = down;
+            break;
+            }
           // purge de la fenêtre glissante
           int keep = 0;
           for (int i = 0; i < m_gesture_count; i++)
