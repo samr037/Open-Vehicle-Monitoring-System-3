@@ -258,6 +258,7 @@ class OvmsVehicleNissanLeaf : public OvmsVehicle
 
     // --- Geste volant : N appuis sur CANCEL (0x239) dans une fenêtre ---
     // Détecté au niveau de la réception CAN, sans dépendre du réseau.
+    bool   m_can2_hwfilter = false;                     // MCP2515 acceptance filter currently applied on can2
     bool   cfg_gesture_enable = false;                  // Enable steering wheel gesture trigger
     int    cfg_gesture_presses = 3;                     // Presses required
     int    cfg_gesture_window = 10000;                  // Window [ms]

@@ -532,8 +532,20 @@ void OvmsVehicleNissanLeaf::ConfigChanged(OvmsConfigParam* param)
 
   cfg_ze1 = MyConfig.GetParamValueBool("xnl", "ze1", false);
 
-  // Apply the CAN2 MCP2515 hardware filter for the configured Leaf variant.
-  SetCan2Mcp2515Filter(m_can2, true);
+  // CAN2 MCP2515 hardware acceptance filter. Off by default here: the upstream
+  // filter set admits 20 IDs and 0x239 (steering-wheel buttons, the gesture
+  // trigger) is not one of them, nor are the diagnostic replies of the body
+  // modules (0x760-0x7bb) that `xnl obd can2 device` needs. The software filter
+  // installed with MyPollers.AddFilter() in the constructor already keeps every
+  // unwanted frame off core 1, on both buses, which the MCP2515 filter cannot do
+  // for can1. Only touch the controller when the wanted state changes:
+  // SetAcceptanceFilter() parks the MCP2515 in CONFIG mode for >= 40 ms each time.
+  bool hwfilter = MyConfig.GetParamValueBool("xnl", "canfilter.hw", false);
+  if (hwfilter != m_can2_hwfilter)
+    {
+    SetCan2Mcp2515Filter(m_can2, hwfilter);
+    m_can2_hwfilter = hwfilter;
+    }
   }
 
 

@@ -70,8 +70,14 @@ static void GsmPPPOS_StatusCallback(ppp_pcb *pcb, int err_code, void *ctx)
     {
     case PPPERR_NONE:
       {
+      if (me->m_shutdown) return;   // late callback for a Shutdown() of ours
       if ( ip_addr_isany(&pppif->ip_addr) || ip_addr_isany(&pppif->gw))
-        {  
+        {
+        // Some carriers negotiate IPv6CP first and lwIP reports PPPERR_NONE once
+        // per protocol: this first callback carries no IPv4 yet and the IPv4 one
+        // follows (upstream issue #1501). Returning here is right for that case.
+        // If the IPv4 callback never comes, m_connected stays false and the modem
+        // state machine's NetMode supervision restarts PPP after 180 s.
         ESP_LOGI(TAG, "StatusCallBack: Invalid IPV4 address or Gateway address received - ignored");
         return;
         }

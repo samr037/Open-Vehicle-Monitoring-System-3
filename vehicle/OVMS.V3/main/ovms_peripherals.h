@@ -154,23 +154,23 @@ class Peripherals : public InternalRamAllocated
      ~Peripherals();
 
   public:
-    esp32system* m_esp32;
+    esp32system* m_esp32 = nullptr;
     spi* m_spibus;
 
 #ifdef CONFIG_OVMS_COMP_MAX7317
-    max7317* m_max7317;
+    max7317* m_max7317 = nullptr;
 #endif // #ifdef CONFIG_OVMS_COMP_MAX7317
 
 #ifdef CONFIG_OVMS_COMP_ESP32CAN
-    esp32can* m_esp32can;
+    esp32can* m_esp32can = nullptr;
 #endif // #ifdef CONFIG_OVMS_COMP_ESP32CAN
 
 #ifdef CONFIG_OVMS_COMP_WIFI
-    esp32wifi* m_esp32wifi;
+    esp32wifi* m_esp32wifi = nullptr;
 #endif // #ifdef CONFIG_OVMS_COMP_WIFI
 
 #ifdef CONFIG_OVMS_COMP_BLUETOOTH
-    esp32bluetooth* m_esp32bluetooth;
+    esp32bluetooth* m_esp32bluetooth = nullptr;
 #endif // #ifdef CONFIG_OVMS_COMP_BLUETOOTH
 
 #ifdef CONFIG_OVMS_COMP_ADC
@@ -181,8 +181,8 @@ class Peripherals : public InternalRamAllocated
 #endif // #ifdef CONFIG_OVMS_COMP_ADC
 
 #ifdef CONFIG_OVMS_COMP_MCP2515
-    mcp2515* m_mcp2515_1;
-    mcp2515* m_mcp2515_2;
+    mcp2515* m_mcp2515_1 = nullptr;
+    mcp2515* m_mcp2515_2 = nullptr;
 #endif // #ifdef CONFIG_OVMS_COMP_MCP2515
 
 #ifdef CONFIG_OVMS_COMP_EXTERNAL_SWCAN
@@ -190,19 +190,19 @@ class Peripherals : public InternalRamAllocated
 #endif // #ifdef CONFIG_OVMS_COMP_EXTERNAL_SWCAN
 
 #ifdef CONFIG_OVMS_COMP_SDCARD
-    sdcard* m_sdcard;
+    sdcard* m_sdcard = nullptr;
 #endif // #ifdef CONFIG_OVMS_COMP_SDCARD
 
 #ifdef CONFIG_OVMS_COMP_CELLULAR
-    modem* m_cellular_modem;
+    modem* m_cellular_modem = nullptr;
 #endif // #ifdef CONFIG_OVMS_COMP_CELLULAR
 
 #ifdef CONFIG_OVMS_COMP_OBD2ECU
-    obd2ecu* m_obd2ecu;
+    obd2ecu* m_obd2ecu = nullptr;
 #endif // #ifdef CONFIG_OVMS_COMP_OBD2ECU
 
 #ifdef CONFIG_OVMS_COMP_EXT12V
-    ext12v* m_ext12v;
+    ext12v* m_ext12v = nullptr;
 #endif // #ifdef CONFIG_OVMS_COMP_EXT12V
   };
 
