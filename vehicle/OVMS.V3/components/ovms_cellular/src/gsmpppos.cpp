@@ -111,13 +111,27 @@ static void GsmPPPOS_StatusCallback(ppp_pcb *pcb, int err_code, void *ctx)
       }
     case PPPERR_USER:
       {
-      if (me->m_connected)
+      if (me->m_shutdown)
         {
-        ESP_LOGI(TAG, "PPP connection has been closed");
-        me->m_connected = false;
-        MyEvents.SignalEvent("system.modem.down",NULL);
+        // Closed on our request (GsmPPPOS::Shutdown): the modem state machine
+        // owns the restart, do not reconnect from here.
+        if (me->m_connected)
+          {
+          ESP_LOGI(TAG, "PPP connection has been closed");
+          me->m_connected = false;
+          MyEvents.SignalEvent("system.modem.down",NULL);
+          }
+        return;
         }
-      return;
+      // lwIP sets pcb->err_code = PPPERR_USER in ppp_close() and only clears it
+      // in sifup()/sif6up(), i.e. on the next successful IPCP. ppp_connect() does
+      // not reset it. So every attempt that fails before getting an address after
+      // a previous ppp_close() is reported as PPPERR_USER, not PPPERR_CONNECT.
+      // Without a Shutdown() of ours this is a link loss: fall through to the
+      // common reconnect path below. (Seen as a 45 h LTE outage with the modem
+      // sitting in NetMode, and as upstream issue #1513.)
+      ESP_LOGW(TAG, "status_cb: PPP closed without a shutdown request - treating as link loss");
+      break;
       }
     case PPPERR_CONNECT:
       {
@@ -166,6 +180,15 @@ static void GsmPPPOS_StatusCallback(ppp_pcb *pcb, int err_code, void *ctx)
     {
     me->m_connected = false;
     MyEvents.SignalEvent("system.modem.down",NULL);
+    }
+
+  if (me->m_shutdown)
+    {
+    // A late callback for a Shutdown() of ours (observed 5 s after ppp_close):
+    // StopPPP() has stopped this session on purpose, the state machine will
+    // call Startup() when it wants PPP back. Do not race it with a reconnect.
+    ESP_LOGI(TAG, "PPP shutdown requested - not reconnecting");
+    return;
     }
 
   // Try to reconnect in 30 seconds. This is assuming the modem level
@@ -241,6 +264,12 @@ void GsmPPPOS::Startup()
   {
   if (!m_mux || !m_ppp) return;
 
+  // A previous session may still be alive or sitting in its reconnect holdoff
+  // (NetLoss reached with PPP already down takes no StopPPP()): bring the pcb
+  // back to PPP_PHASE_DEAD before reconfiguring it, ppp_connect() refuses
+  // anything else.
+  if (!m_shutdown) Shutdown(true);
+
   m_shutdown = false;  // Reset shutdown flag
   ppp_set_auth(m_ppp, PPPAUTHTYPE_PAP,
     MyConfig.GetParamValue("modem", "apn.user").c_str(),
@@ -270,7 +299,13 @@ void GsmPPPOS::Startup()
   ESP_LOGI(TAG, "PPP LCP echo: interval=%us fails=%u (0 disables)",
            m_ppp->settings.lcp_echo_interval, m_ppp->settings.lcp_echo_fails);
 
-  pppapi_connect(m_ppp, 0);
+  err_t err = pppapi_connect(m_ppp, 0);
+  if (err != ERR_OK)
+    {
+    // ERR_ALREADY / ERR_VAL: the pcb was not in PPP_PHASE_DEAD. The NetMode
+    // supervision in the modem state machine will notice the missing session.
+    ESP_LOGE(TAG, "pppapi_connect failed: %d", (int)err);
+    }
   }
 
 void GsmPPPOS::Shutdown(bool hard)
