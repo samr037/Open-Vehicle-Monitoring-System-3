@@ -1093,12 +1093,22 @@ void esp32wifi::UpdateNetMetrics()
     m_sta_rssi = -1270;
     }
 
+    // Report the network we are actually associated with, not the one we are
+    // configured for: GetSSID() returns the STA configuration, which is set
+    // while scanning for a home network hundreds of km away. Anything that
+    // reads m.net.wifi.network as "we are on this network" (V2 'F' provider
+    // field, presence checks) was fed the configured name regardless.
+    std::string assoc_ssid;
+    if (m_sta_connected)
+      assoc_ssid = std::string((const char*)m_sta_ap_info.ssid);
+    else if (m_mode == ESP32WIFI_MODE_AP)
+      assoc_ssid = std::string((const char*)m_wifi_ap_cfg.ap.ssid);
     float current_dbm = (float)m_sta_rssi / 10;
-    StdMetrics.ms_m_net_wifi_network->SetValue(GetSSID());
+    StdMetrics.ms_m_net_wifi_network->SetValue(assoc_ssid);
     StdMetrics.ms_m_net_wifi_sq->SetValue(current_dbm, dbm);
     if (StdMetrics.ms_m_net_type->AsString() == "wifi")
       {
-      StdMetrics.ms_m_net_provider->SetValue(GetSSID());
+      StdMetrics.ms_m_net_provider->SetValue(assoc_ssid);
       StdMetrics.ms_m_net_sq->SetValue((int)(m_sta_rssi-5)/10, dbm);
       if (m_good_signal && current_dbm < m_bad_dbm)
         m_good_signal = false;
