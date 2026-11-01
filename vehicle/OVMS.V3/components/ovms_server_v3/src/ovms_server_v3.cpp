@@ -163,11 +163,11 @@ static void OvmsServerV3MongooseCallback(struct mg_connection *nc, int ev, void 
             int retrymin = MyConfig.GetParamValueInt("server.v3", "authfail.retry.min", 60);
             int retrymax = MyConfig.GetParamValueInt("server.v3", "authfail.retry.max", 3600);
             if (retrymin < 10) retrymin = 10;
+            if (retrymax > 86400) retrymax = 86400;   // keeps the doubling below from overflowing int
             if (retrymax < retrymin) retrymax = retrymin;
             int delay = retrymin;
             for (int i = 0; i < MyOvmsServerV3->m_authfail && delay < retrymax; i++)
-              delay *= 2;
-            if (delay > retrymax) delay = retrymax;
+              delay = std::min(delay * 2, retrymax);
             if (MyOvmsServerV3->m_authfail < 30) MyOvmsServerV3->m_authfail++;
             ESP_LOGW(TAG, "Authentication failed (#%d), retrying in %d seconds",
               MyOvmsServerV3->m_authfail, delay);
@@ -1348,10 +1348,14 @@ void OvmsServerV3::ConfigChanged(OvmsConfigParam* param)
     }
 
   // Config lock released before taking the Mongoose lock:
-  if (do_reconnect && (m_mgconn || m_connretry < 0))
+  // m_connretry < 0 was upstream's "suspended" marker; with the auth backoff a
+  // pending retry is m_connretry > 0 with no connection, so test for any pending
+  // state, and let the new credentials start from a clean backoff.
+  if (do_reconnect && (m_mgconn || m_connretry != 0))
     {
     Disconnect();
-    if (m_connretry < 0) m_connretry = 2;
+    m_authfail = 0;
+    m_connretry = 2;
     SetStatus("Server/credentials changed, reconnecting...", false, WaitReconnect);
     }
   }

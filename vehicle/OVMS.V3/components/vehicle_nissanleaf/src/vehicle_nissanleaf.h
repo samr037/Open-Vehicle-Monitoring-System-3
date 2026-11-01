@@ -257,14 +257,14 @@ class OvmsVehicleNissanLeaf : public OvmsVehicle
     // --- Geste volant : N appuis sur CANCEL (0x239) dans une fenêtre ---
     // Détecté au niveau de la réception CAN, sans dépendre du réseau.
     bool   cfg_gesture_enable = false;                  // Enable steering wheel gesture trigger
-    int    cfg_gesture_presses;                         // Presses required
-    int    cfg_gesture_window;                          // Window [ms]
-    int    cfg_gesture_cooldown;                        // Cooldown after a trigger [ms]
-    int    cfg_gesture_radius;                          // Geofence radius [m], 0 = disabled
-    int    cfg_gesture_button;                          // Button bit mask in 0x239 d[3]
+    int    cfg_gesture_presses = 3;                     // Presses required
+    int    cfg_gesture_window = 10000;                  // Window [ms]
+    int    cfg_gesture_cooldown = 10000;                // Cooldown after a trigger [ms]
+    int    cfg_gesture_radius = 0;                      // Geofence radius [m], 0 = disabled
+    int    cfg_gesture_button = 0x02;                   // Button bit mask in 0x239 d[3]
     string cfg_gesture_event;                           // Event name signalled on match
     string cfg_gesture_ssid;                            // Home wifi SSID(s), comma separated
-    float  cfg_gesture_lat, cfg_gesture_lon;            // Geofence centre
+    float  cfg_gesture_lat = 0, cfg_gesture_lon = 0;    // Geofence centre
     #define NL_GESTURE_MAX_PRESSES 8
     int64_t m_gesture_press[NL_GESTURE_MAX_PRESSES] = {};   // ring buffer of press times [ms]
     int     m_gesture_count = 0;                        // valid entries in the ring
