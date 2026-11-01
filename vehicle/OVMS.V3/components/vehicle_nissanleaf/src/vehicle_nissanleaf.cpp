@@ -50,6 +50,7 @@ static const char *TAG = "v-nissanleaf";
 #include "ovms_command.h"
 #include "ovms_config.h"
 #include "mcp2515.h"
+#include "ovms_netmanager.h"
 
 #define MAX_POLL_DATA_LEN         329
 #define BMS_TXID                  0x79B
@@ -2084,7 +2085,10 @@ void OvmsVehicleNissanLeaf::IncomingFrameCan2(CAN_frame_t* p_frame)
               // 1) Le WiFi de la maison prouve la présence, immédiatement et
               //    sans satellite — décisif dans un garage couvert, et au
               //    démarrage à froid quand le GPS n'a pas encore de point.
-              if (!cfg_gesture_ssid.empty())
+              //    m.net.wifi.network only names an *associated* network since
+              //    the esp32wifi fix; require the netmanager to agree as well,
+              //    so a stale or configured-only name can never count as home.
+              if (!cfg_gesture_ssid.empty() && MyNetManager.m_connected_wifi)
                 {
                 std::string ssid = StandardMetrics.ms_m_net_wifi_network->AsString();
                 if (!ssid.empty())
