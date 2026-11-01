@@ -53,6 +53,13 @@ modem* MyModem = NULL;
 // retry counter to avoid tight NetLoss loops
 static int s_netloss_retries = 0;
 static const int s_netloss_retry_limit = 3;
+// PPP supervision while in NetMode (modem task only, like s_netloss_retries).
+// Registration can be fine and the MUX alive (status polls keep GoodFrameAge()
+// at zero) while the PPP session is gone for good: nothing else notices.
+static int s_ppp_down_ticks = 0;             // seconds in NetMode without a connected PPP
+static int s_ppp_up_ticks = 0;               // seconds in NetMode with a connected PPP
+static const int s_ppp_down_limit = 180;     // allows several 30 s status_cb reconnects first
+static const int s_ppp_stable_ticks = 60;    // PPP up this long => session considered stable
 
 ////////////////////////////////////////////////////////////////////////////////
 // General utility functions
@@ -770,7 +777,10 @@ void modem::State1Enter(modem_state1_t newstate)
           }
         else
           {
-          ESP_LOGI(TAG, "NetLoss: PPP not connected - skipping detach/StopPPP");
+          // PPP may sit in its lwIP reconnect holdoff: force the pcb back to
+          // PPP_PHASE_DEAD so that StartPPP() on the next NetMode starts clean.
+          ESP_LOGI(TAG, "NetLoss: PPP not connected - stopping PPP, skipping detach");
+          StopPPP();
           }
         }
       break;
@@ -787,6 +797,8 @@ void modem::State1Enter(modem_state1_t newstate)
 
     case NetMode:
       MyEvents.SignalEvent("system.modem.netmode", NULL);
+      s_ppp_down_ticks = 0;
+      s_ppp_up_ticks = 0;
       StartPPP();
       break;
 
@@ -1105,6 +1117,25 @@ modem::modem_state1_t modem::State1Ticker1()
         // We've lost the network connection
         ESP_LOGW(TAG, "Lost network connection (+PPP disconnect in NetMode)");
         return NetLoss;
+        }
+      // Supervise the PPP session itself: a modem that is registered, whose MUX
+      // answers status polls, but whose PPP never came back (lwIP reporting a
+      // stale PPPERR_USER, failed pppapi_connect, ...) otherwise stays here forever.
+      if (m_ppp == NULL || !m_ppp->m_connected)
+        {
+        s_ppp_up_ticks = 0;
+        if (++s_ppp_down_ticks >= s_ppp_down_limit)
+          {
+          ESP_LOGW(TAG, "PPP not connected for %d s in NetMode - assuming link lost", s_ppp_down_ticks);
+          s_ppp_down_ticks = 0;
+          return NetLoss;
+          }
+        }
+      else
+        {
+        s_ppp_down_ticks = 0;
+        if (s_ppp_up_ticks < s_ppp_stable_ticks && ++s_ppp_up_ticks == s_ppp_stable_ticks)
+          s_netloss_retries = 0;    // stable session: end the NetLoss escalation chain
         }
       if ((m_mux != NULL)&&(m_state1_ticker>5)&&((m_state1_ticker % 30) == 0))
         {
